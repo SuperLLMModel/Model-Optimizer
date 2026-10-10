@@ -46,6 +46,7 @@ __all__ = [
     "backend",
     "barrier",
     "distributed_forward_loop",
+    "expert_parallel_state",
     "fsdp2_wrap",
     "get_active_mo_session",
     "is_available",
@@ -451,6 +452,19 @@ def modelopt_session(timeout: timedelta | None = None, device=None):
         if owns_group:
             cleanup()
         _active_mo_session._reset()
+
+
+def expert_parallel_state(model: torch.nn.Module) -> "ParallelState | None":
+    """Return the ``ParallelState`` of the model's routed experts, or ``None`` if they are not expert-parallel.
+
+    The expert-parallel loader seeds every routed-expert module with a ``ParallelState`` that carries the
+    expert-model-parallel group (``load_and_prepare_ep``); no other module of a HuggingFace model has one.
+    """
+    for module in model.modules():
+        state = getattr(module, "_parallel_state", None)
+        if state is not None and state.expert_model_parallel_group.is_initialized():
+            return state
+    return None
 
 
 def _fsdp2_wrap_modules(model: "torch.nn.Module") -> list["torch.nn.Module"]:
