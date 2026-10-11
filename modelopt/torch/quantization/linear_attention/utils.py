@@ -83,6 +83,12 @@ def validate_gdn_quantizer(
 
     if not isinstance(quantizer, TensorQuantizer):
         raise ValueError(f"{name} requires a single TensorQuantizer")
+    if quantizer.block_sizes is not None and quantizer.block_sizes.get("type") == "dynamic":
+        raise ValueError(
+            f"{name} does not support block_sizes['type']='dynamic'. For INT8 state QDQ, "
+            "use top-level type='dynamic' with block_sizes={-1: N}; "
+            "quantized block scales are not supported."
+        )
     if not (
         quantizer._dynamic
         and quantizer.num_bits in num_bits

@@ -16,11 +16,10 @@
 """Functional training launches of the optional quantized-ReplaySSM serving kernels."""
 
 import torch
-from vllm.model_executor.layers.fla.ops.fused_recurrent_replayssm import (
-    _apply_h_value_axis,
-    fused_recurrent_gated_delta_rule_replayssm,
-    prefill_write_checkpoint,
-)
+
+from ._compat import fla_module
+
+_native = fla_module("fused_recurrent_replayssm")
 
 
 def _storage(value, enabled):
@@ -50,19 +49,19 @@ def checkpoint(value, enabled):
     state, scales, indices = _storage(value, enabled)
     original = value.transpose(-1, -2).unsqueeze(0).contiguous().float()
     if enabled:
-        prefill_write_checkpoint(
+        _native.prefill_write_checkpoint(
             original, state, None, None, scales, None, None, indices, 8, hadamard=True
         )
     else:
-        state[1] = _apply_h_value_axis(original)[0]
+        state[1] = _native._apply_h_value_axis(original)[0]
     return _decoded(state, scales)
 
 
 def original_basis(value):
     """Use serving's FP32 checkpoint transform when returning a dense state."""
-    return _apply_h_value_axis(value.transpose(-1, -2).unsqueeze(0).contiguous())[0].transpose(
-        -1, -2
-    )
+    return _native._apply_h_value_axis(value.transpose(-1, -2).unsqueeze(0).contiguous())[
+        0
+    ].transpose(-1, -2)
 
 
 def step(q, k, v, gate, beta, carry, window, enabled, scale, normalize, gate_inputs):
@@ -97,7 +96,7 @@ def step(q, k, v, gate, beta, carry, window, enabled, scale, normalize, gate_inp
         a, b = raw_gate[None].contiguous(), raw_beta[None].contiguous()
     output = torch.empty(1, heads, values, device=q.device, dtype=torch.bfloat16)
     cursor = carry.cursor
-    fused_recurrent_gated_delta_rule_replayssm(
+    _native.fused_recurrent_gated_delta_rule_replayssm(
         mixed,
         a,
         b,

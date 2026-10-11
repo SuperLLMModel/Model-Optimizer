@@ -20,6 +20,7 @@ import torch.nn as nn
 
 import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
+from modelopt.recipe import load_recipe
 from modelopt.torch.quantization.linear_attention import (
     LinearAttentionConfig,
     get_linear_attention_layers,
@@ -181,12 +182,22 @@ def test_state_qat_requires_serving_policy(mixin):
             model.modelopt_post_restore()
 
 
-@pytest.mark.parametrize("overrides", [{"pass_through_bwd": False}, {"type": "static"}])
-def test_unsupported_quantizer_fails_at_conversion(overrides):
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"pass_through_bwd": False}, "supports only"),
+        ({"type": "static"}, "supports only"),
+        (
+            {"num_bits": 8, "axis": None, "block_sizes": {-1: 32, "type": "dynamic"}},
+            "use top-level type='dynamic'",
+        ),
+    ],
+)
+def test_unsupported_quantizer_fails_at_conversion(overrides, message):
     cfg = quant_cfg()
     cfg["algorithm"] = None
     cfg["quant_cfg"][-1]["cfg"] = {**GDN_STATE_FP8_DYNAMIC, **overrides}
-    with pytest.raises(ValueError, match="supports only"):
+    with pytest.raises(ValueError, match=message):
         mtq.quantize(TinyGatedDeltaNet(), cfg)
 
 
@@ -207,14 +218,18 @@ def test_invalid_phase_lengths(kwargs, message):
         pass
 
 
-def test_restore_legacy_gdn_without_new_quantizer_handles():
+@pytest.mark.parametrize("has_policy", [False, True])
+def test_restore_legacy_gdn_without_new_quantizer_handles(has_policy):
     config = {"quant_cfg": [{"quantizer_name": "*", "enable": False}], "algorithm": None}
     model = mtq.quantize(TinyGatedDeltaNet(), config)
     state = mto.modelopt_state(model)
     for _, mode_state in state["modelopt_state_dict"]:
         mode_state["config"].pop("linear_attention", None)
         metadata = mode_state["metadata"]
-        metadata.pop("linear_attention", None)
+        if not has_policy:
+            metadata.pop("linear_attention", None)
+        else:
+            assert "linear_attention" in metadata
         for name in ("gdn_state_quantizer", "gdn_w_quantizer"):
             metadata["quantizer_state"].pop(name, None)
     restored = TinyGatedDeltaNet()
@@ -283,3 +298,22 @@ def test_quant_cfg_refinement_and_policy_precedence():
     cfg["quant_cfg"][-1]["cfg"] = {**GDN_STATE_FP8_DYNAMIC, "pass_through_bwd": False}
     with pytest.raises(ValueError, match="supports only"):
         mtq.quantize(model, cfg)
+
+
+@pytest.mark.parametrize(
+    ("class_name", "quantizer_name"),
+    [
+        ("GatedDeltaNet", "gdn_state_quantizer"),
+        ("Qwen3NextGatedDeltaNetAttention", "gdn_state_quantizer"),
+        ("KimiDeltaAttention", "kda_state_quantizer"),
+        ("KimiK3DeltaAttention", "kda_state_quantizer"),
+        ("KimiLinearDeltaAttention", "kda_state_quantizer"),
+    ],
+)
+def test_state_recipe_rejects_unconverted_layers(class_name, quantizer_name):
+    # An unknown framework class has no registered state-quantization adapter.
+    model = type(class_name, (nn.Module,), {})()
+    model.proj = nn.Linear(4, 4)
+    config = load_recipe("general/ptq/linear_attention_state_int8_block32_dynamic").quantize
+    with pytest.raises(RuntimeError, match=quantizer_name):
+        mtq.quantize(model, config)

@@ -163,8 +163,7 @@ def restore_quantizer_state(model: nn.Module, config: QuantizeConfig, metadata: 
         return model
 
     quantizer_state_dict = dict(metadata["quantizer_state"])
-    if "linear_attention" not in metadata:
-        _restore_legacy_linear_attention_quantizers(model, quantizer_state_dict)
+    _restore_legacy_linear_attention_quantizers(model, quantizer_state_dict)
     unmatched_keys = quantizer_state_dict.keys() - quantizer_state(model).keys()
     extra_keys = quantizer_state(model).keys() - quantizer_state_dict.keys()
 

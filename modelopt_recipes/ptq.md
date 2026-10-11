@@ -64,7 +64,7 @@ supported combinations.
 | `iq2_xs` | IQ2_XS W2A16 (2.31 bpw), MLP + MoE weights only | none | GPTQ (layerwise) |
 | `iq2_s` | IQ2_S W2A16 (2.56 bpw), MLP + MoE weights only | none | GPTQ (layerwise) |
 | `q8_0` | Q8_0 W8A16 (8.5 bpw), eligible linears | none | none (no calibration) |
-| `linear_attention_state_int8_dynamic` | GDN/KDA decode state INT8 + Hadamard; weights unchanged | none | none (dynamic scales; requires a prefix/decode phase context) |
+| `linear_attention_state_int8_dynamic` | GDN/KDA decode state INT8 + Hadamard; requires a private ReplaySSM fork | none | none (dynamic scales; requires a prefix/decode phase context) |
 | `linear_attention_state_int8_block32_dynamic` | GDN/KDA state INT8, 32 value channels per key row; weights unchanged | none | none (dynamic scales; requires vLLM and a prefix/decode phase context) |
 | `linear_attention_state_int8_block32_dynamic_kimi_k3` | Kimi-K3/Kimi-Linear KDA state INT8, 32 value channels per key row | none | none (dynamic scales; explicit Triton Kimi profile) |
 
@@ -88,6 +88,24 @@ Kimi-K3 package dependencies (`gate_lower_bound=None` in the serving HF config).
 It never falls back to prepared-only arithmetic.
 KDA validates the selected cache paths at the actual head size once per device;
 builds with inconsistent state readout are rejected before training.
+
+The `linear_attention_state_int8_dynamic` recipe uses an optional private
+quantized-ReplaySSM fork; public vLLM releases do not provide those kernels.
+Without access to that fork, use a block32 recipe above. ReplaySSM native tests
+skip when the fork is absent, so the public CI images do not qualify this profile.
+
+Linear-attention training has failed with a CUDA misaligned-address error on sm_120
+using vLLM 0.20, Triton 3.6 and `fla-core==0.5.1`; the faulting kernel is not yet isolated.
+The library rejects state QAT on sm_120+ with Triton older than 3.7 before launching
+kernels, and the training tests skip that combination. Use a vLLM build with Triton
+3.7 or newer on these GPUs.
+The tested KDA profiles pass bit-exact native forward comparisons on vLLM 0.30;
+vLLM 0.20's KDA cache-layout mismatch remains an expected failure.
+
+Megatron state QAT requires native `_compute_gates` and `_forward_compute` hooks
+for raw gates and packed padding; Megatron-Core 0.19.2 lacks these hooks and is
+rejected before an active QAT forward. Loading checkpoints and running the original
+module with state quantizers disabled outside a phase remain supported.
 
 State QAT training requires explicit per-sequence prefix lengths. Megatron selective
 GDN recompute captures each microbatch's phase and packed metadata, allowing backward

@@ -18,7 +18,15 @@
 import pytest
 import torch
 
-from modelopt.torch.quantization.linear_attention import LinearAttentionConfig, recurrent_decode
+from modelopt.torch.quantization.linear_attention import (
+    LinearAttentionConfig,
+    gdn_state_qat,
+    recurrent_decode,
+)
+
+pytest.importorskip("vllm")
+
+from modelopt.torch.kernels.quantization.linear_attention.serving._compat import fla_module
 
 
 @pytest.fixture(
@@ -27,10 +35,12 @@ from modelopt.torch.quantization.linear_attention import LinearAttentionConfig, 
     ids=["gdn-token", "gdn-replay", "kda-replay"],
 )
 def compiled_replay(request):
-    native = pytest.importorskip(
-        "vllm.model_executor.layers.fla.ops.fused_recurrent_replayssm",
-        exc_type=ModuleNotFoundError,
-    )
+    try:
+        native = fla_module("fused_recurrent_replayssm")
+    except ModuleNotFoundError as error:
+        if error.name is not None and error.name.endswith(".fused_recurrent_replayssm"):
+            pytest.skip("Requires the optional quantized-ReplaySSM serving fork")
+        raise
     channel, window = request.param
     torch.manual_seed(71)
     q, k = [
@@ -69,6 +79,24 @@ def compiled_replay(request):
     torch.autograd.grad(out.sum() + carry.reconstruct().sum(), (*args, initial))
     torch.cuda.synchronize()
     return native, args, initial, kwargs, forward
+
+
+def test_replay_rejects_invalid_value_dim_before_backend():
+    q = torch.ones(1, 2, 1, 32, device="cuda", dtype=torch.bfloat16)
+    v = q.new_ones(1, 2, 1, 48)
+    with pytest.raises(ValueError, match="Dv divisible by 32"):
+        gdn_state_qat(
+            q,
+            q,
+            v,
+            q[..., 0],
+            q[..., 0],
+            policy=LinearAttentionConfig(backend="serving", precision="replayssm"),
+            state_qdq=True,
+            state_format="int8",
+            prefill_lengths=[1],
+            initial_state=q.new_ones(1, 1, 32, 48),
+        )
 
 
 def test_replay_matches_persistent_serving_cache(compiled_replay):

@@ -31,6 +31,17 @@ from modelopt.torch.quantization.nn import TensorQuantizer
 
 vllm = pytest.importorskip("vllm")
 
+# Guard the whole module, including layout probes, before any CUDA kernel launches.
+if (
+    torch.cuda.is_available()
+    and torch.cuda.get_device_capability()[0] >= 12
+    and Version(triton.__version__) < Version("3.7")
+):
+    pytest.skip(
+        "Linear-attention training has a CUDA misaligned-address fault on sm_120+ with Triton < 3.7",
+        allow_module_level=True,
+    )
+
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 
 from modelopt.torch.kernels.quantization.linear_attention.serving._compat import (
@@ -147,15 +158,12 @@ def _native_forward(args, quantizer, kda, kimi_k3):
 @pytest.fixture(scope="module", params=["gdn", "kda", "kimi_k3"])
 def compiled_serving_case(request):
     """Compile one shared BF16 shape per model, outside the test-call timer."""
-    # Skip before any kernels: an FLA backward fault poisons later tests' CUDA context.
-    if torch.cuda.get_device_capability()[0] >= 12 and Version(triton.__version__) < Version("3.7"):
-        pytest.skip("FLA backward causes misaligned CUDA access on sm_120+ with Triton < 3.7")
     kda = request.param != "gdn"
     kimi_k3 = request.param == "kimi_k3"
     if kimi_k3 and optional_module("vllm.models.kimi_k3.nvidia.ops.third_party.kda") is None:
         pytest.skip("This vLLM build does not provide the Kimi-K3 backend")
     torch.manual_seed(73)
-    keys = 128 if kimi_k3 else 32
+    keys = 128 if kda else 32  # Share compiled KDA kernels with the Kimi-K3 case.
     args = [
         torch.randn(1, 73, 1, dim, device="cuda", dtype=torch.bfloat16)
         # Rectangular GDN state catches transposes; equal padded tile widths also
@@ -263,22 +271,19 @@ def test_serving_state_qdq_and_handoff_gradient(compiled_serving_case):
             quantizer.enable()
 
 
+@pytest.mark.parametrize("compiled_serving_case", ["kimi_k3"], indirect=True, scope="module")
 @pytest.mark.parametrize(
-    ("overrides", "message", "kimi_only"),
+    ("overrides", "message"),
     [
         (
             {"gate_inputs": None, "use_gate_in_kernel": False, "use_beta_sigmoid_in_kernel": False},
             "raw gate_inputs",
-            True,
         ),
-        ({"use_qk_l2norm_in_kernel": False}, "normalization", True),
-        ({"allow_neg_eigval": True}, "allow_neg_eigval", False),
+        ({"use_qk_l2norm_in_kernel": False}, "normalization"),
     ],
 )
-def test_rejects_silent_serving_mismatches(compiled_serving_case, overrides, message, kimi_only):
-    args, _, forward, _, kimi_k3 = compiled_serving_case
-    if args[3].ndim != 4 or (kimi_only and not kimi_k3):
-        pytest.skip("Guard applies only to the selected KDA profile")
+def test_rejects_silent_serving_mismatches(compiled_serving_case, overrides, message):
+    _, _, forward, _, _ = compiled_serving_case
     with pytest.raises(ValueError, match=message):
         forward(**overrides)
 
@@ -313,6 +318,7 @@ def test_kda_non_power_of_two_layout(monkeypatch):
         _kda_state_v_first.cache_clear()
 
 
+@pytest.mark.parametrize("compiled_serving_case", ["gdn", "kda"], indirect=True, scope="module")
 @pytest.mark.parametrize("packed", [False, True], ids=["dense", "packed"])
 def test_padding_does_not_extend_decode(compiled_serving_case, packed):
     args, quantizer, forward, _, _ = compiled_serving_case

@@ -1178,8 +1178,11 @@ class _MegatronLinearAttentionMixin(_LinearAttentionQuantMixin):
 
             def run_kernel(*args, **kwargs):
                 kwargs["use_qk_l2norm_in_kernel"] = self.use_qk_l2norm
-                if self._linear_attention_gate_inputs is not None:
-                    kwargs["gate_inputs"] = self._linear_attention_gate_inputs
+                if self._linear_attention_gate_inputs is None:
+                    raise NotImplementedError(
+                        "Serving state QAT requires raw gates captured by Megatron's _compute_gates hook"
+                    )
+                kwargs["gate_inputs"] = self._linear_attention_gate_inputs
                 return self._linear_attention_kernel(kernel, *args, **kwargs)
 
             self.gated_delta_rule = run_kernel
@@ -1276,6 +1279,7 @@ class _MegatronLinearAttentionMixin(_LinearAttentionQuantMixin):
         return run(hidden_states)
 
     def forward_pre_attn_and_core_attn(self, *args, **kwargs):
+        self.validate_linear_attention_execution()
         with self._quantized_linear_attention_kernel():
             return super().forward_pre_attn_and_core_attn(*args, **kwargs)
 
@@ -1290,12 +1294,13 @@ class _MegatronLinearAttentionMixin(_LinearAttentionQuantMixin):
             raise NotImplementedError(
                 "State QAT supports selective GDN recompute, not full-layer recompute"
             )
-        if (
-            serving
-            and getattr(self, "recompute_gdn", False)
-            and not hasattr(super(), "_forward_compute")
+        if serving and (
+            not hasattr(super(), "_compute_gates") or not hasattr(super(), "_forward_compute")
         ):
-            raise NotImplementedError("Selective state QAT recompute requires Megatron's core hook")
+            raise NotImplementedError(
+                "Serving state QAT requires Megatron-Core's _compute_gates and _forward_compute "
+                "hooks to preserve raw gates and packed sequence lengths. Upgrade Megatron-Core."
+            )
 
     def _validate_linear_attention_config(self):
         if self._serving_arithmetic and self.config.deterministic_mode:

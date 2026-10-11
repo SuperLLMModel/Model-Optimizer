@@ -16,10 +16,13 @@
 """Training forwards with a chunked prefill prefix and recurrent decode suffix."""
 
 from contextlib import contextmanager
+from functools import cache
+from importlib.metadata import version
 from itertools import pairwise
 from numbers import Integral
 
 import torch
+from packaging.version import Version
 
 from .decode import _recurrent_decode
 from .utils import _resolve_state_quantizer, _state_qdq, forward_value
@@ -138,12 +141,26 @@ def linear_attention_training_phase(
             module._linear_attention_cu_seqlens = original_boundaries
 
 
+@cache
+def _validate_training_device(device):
+    if torch.cuda.get_device_capability(device)[0] >= 12 and Version(version("triton")) < Version(
+        "3.7"
+    ):
+        raise NotImplementedError(
+            "Linear-attention state QAT is unsupported on sm_120+ with Triton < 3.7 "
+            "due to a CUDA misaligned-address fault. Use a vLLM build with Triton >= 3.7."
+        )
+
+
 def _prepare_prefill_inputs(q, k, v, g, beta, *, policy, chunk_size):
     """Validate the native policy and prepare FP32 values for the training adjoint."""
     if policy.backend != "serving" or chunk_size != 64:
         raise ValueError("State training requires backend='serving' and chunk_size=64")
     if q.device.type != "cuda" or any(x.dtype != torch.bfloat16 for x in (q, k, v)):
         raise ValueError("Serving arithmetic requires CUDA BF16 Q/K/V inputs")
+    if policy.state_codec == "int8_hadamard32" and v.shape[-1] % 32:
+        raise ValueError("int8_hadamard32 requires Dv divisible by 32")
+    _validate_training_device(q.device)
     return tuple(x.float() for x in (q, k, v, g, beta))
 
 

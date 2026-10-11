@@ -234,6 +234,16 @@ def _check_weight_quantization_took_effect(model: nn.Module, config: QuantizeCon
 # Quantizers that only framework plugins add: (class-name patterns of the modules they belong on,
 # what those modules are, recipe units listing the supported models).
 _PLUGIN_QUANTIZERS = {
+    "gdn_state_quantizer": (
+        ("*GatedDeltaNet", "*GatedDeltaNetAttention"),
+        "GDN layer",
+        "linear_attention_state_int8*",
+    ),
+    "kda_state_quantizer": (
+        ("*KimiDeltaAttention", "*KimiK3DeltaAttention", "*KimiLinearDeltaAttention"),
+        "KDA layer",
+        "linear_attention_state_int8*",
+    ),
     "indexer_q_quantizer": (("*Indexer",), "sparse-attention indexer", "indexer_*_nvfp4"),
     "indexer_k_quantizer": (("*Indexer",), "sparse-attention indexer", "indexer_*_nvfp4"),
     "dispatch_quantizer": (("*Experts*", "*FusedMoE"), "MoE experts module", "moe_*_nvfp4"),
@@ -244,9 +254,9 @@ _PLUGIN_QUANTIZERS = {
 def _check_plugin_quantization_took_effect(model: nn.Module, config: QuantizeConfig) -> None:
     """Raise when a config enables a plugin-only quantizer that quantizes nothing.
 
-    The quantizers in ``_PLUGIN_QUANTIZERS`` only exist on modules (sparse-attention indexers, MoE
-    experts) that a framework plugin (vLLM, Megatron-Core) converted. When a plugin does not
-    recognize the installed framework's module class, or the patterns match none of the modules,
+    The quantizers in ``_PLUGIN_QUANTIZERS`` only exist on modules (linear-attention layers,
+    sparse-attention indexers, MoE experts) that a framework plugin (vLLM, Megatron-Core) converted.
+    When a plugin does not recognize the installed framework's module class, or the patterns match none of the modules,
     the tensors silently stay unquantized. Intent is read like in
     :func:`_check_weight_quantization_took_effect`, but only from patterns naming the quantizer, so
     catch-all patterns do not count. A model without such a module (another architecture) is
