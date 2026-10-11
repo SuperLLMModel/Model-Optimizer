@@ -1075,3 +1075,24 @@ def test_union_degrades_to_the_recorded_set_without_the_loader(tmp_path, monkeyp
 
     carried = read_unplaced_weights(model)
     assert key in carried, "recorded keys must still carry when the structural pass is unavailable"
+
+
+def test_a_model_built_from_a_config_names_no_source_checkpoint(tmp_path, monkeypatch):
+    """An empty ``_name_or_path`` is the working directory as a path; nothing there is the model's."""
+    from modelopt.torch.export.unified_export_hf import (
+        _copy_non_model_files_from_source,
+        _source_checkpoint,
+    )
+
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    (workdir / "tokenizer.json").write_text("{}")
+    monkeypatch.chdir(workdir)
+    model = SimpleNamespace(config=SimpleNamespace(_name_or_path=""))
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+
+    _copy_non_model_files_from_source(model, export_dir)
+
+    assert _source_checkpoint(model) is None
+    assert not any(export_dir.iterdir())
